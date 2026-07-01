@@ -363,6 +363,33 @@ details.raw pre{
   100%{transform:translate(-50%,-120px) scale(1);opacity:0;}
 }
 
+/* ============ 여러 뜻 표시 (Gemini) ============ */
+.c-meanings{margin-top:6px;padding:8px 10px;background:#FAFAF6;border-radius:8px;}
+.mn-row{display:flex;align-items:baseline;gap:6px;padding:2px 0;font-size:13px;line-height:1.5;}
+.mn-num{color:#1F6F64;font-weight:600;font-size:12px;min-width:14px;flex-shrink:0;}
+.mn-pos{
+  font-size:10px;color:#7A6020;background:#FAF1D9;
+  padding:1px 6px;border-radius:8px;border:1px solid #E5C97C;
+  flex-shrink:0;
+}
+.mn-ko{color:#1E2A26;flex:1;}
+
+.c-ko-edit{margin-top:4px;}
+.c-ko-edit input{
+  width:100%;border:none;border-bottom:1px dashed #DCEAE6;
+  font-size:11px;color:#7A8080;padding:2px 0;background:transparent;
+}
+.c-ko-edit input:focus{border-bottom-color:#1F6F64;outline:none;color:#1E2A26;font-size:12.5px;}
+
+/* 재생성 버튼 */
+.regen-btn{
+  background:#F1F0E8;border:1px solid #C7CEC2;
+  padding:3px 8px;border-radius:8px;font-size:12px;cursor:pointer;
+  margin-left:auto;
+}
+.regen-btn:active{background:#DCEAE6;}
+.regen-btn:disabled{opacity:.5;cursor:not-allowed;}
+
 /* ============ 학습 필터 그리드 ============ */
 .filter-title{
   font-family:'Space Grotesk',sans-serif;font-size:13px;
@@ -571,14 +598,15 @@ details.raw pre{
     </div>
 
     <div class="group">
-      <div class="group-title">🤖 AI 예문 생성 (선택)</div>
+      <div class="group-title">🤖 AI 뜻·예문 생성 (권장!)</div>
       <label class="row">
-        <input type="checkbox" id="useGeminiChk" onchange="toggleGemini()"> Gemini로 예문·번역 자동 생성
+        <input type="checkbox" id="useGeminiChk" onchange="toggleGemini()"> Gemini로 뜻·품사·예문 자동 생성
       </label>
       <div id="geminiKeyBox" style="display:none;margin-top:8px;">
         <input type="password" id="geminiKeyInput" placeholder="Google AI Studio API 키" onchange="saveGeminiKey()">
-        <div class="hint">단어 추가 시 중학생 수준의 쉬운 영어 예문과 한글 번역을 함께 저장합니다.<br>
-        발급: <b>aistudio.google.com/apikey</b> (무료 tier: 분당 15회, 하루 1500회)</div>
+        <div class="hint">단어를 여러 뜻(품사별)로 정확하게 정리하고 예문까지 생성합니다.<br>
+        "스페셜→특별한/특수한/특별 방송" 처럼 진짜 사전급 품질.<br>
+        발급: <b>aistudio.google.com/apikey</b> (무료: 분당 15회, 하루 1500회)</div>
       </div>
     </div>
 
@@ -1276,18 +1304,30 @@ function closeBadgeCollection(){
   document.getElementById('badgeModal').classList.remove('show');
 }
 
-// ========== GEMINI 예문 생성 ==========
-async function generateExample(word){
+// ========== GEMINI: 뜻 + 품사 + 예문 통합 생성 ==========
+async function generateMeaningAndExample(word){
   if(!settings.useGemini || !settings.geminiKey) return null;
-  var prompt = '영단어 "'+word+'"에 대해 다음 JSON 형식으로만 응답하세요 (설명 없이 JSON만):\n'+
-    '{"example":"쉬운 영어 예문 한 문장 (중학생 수준)","translation":"위 예문의 한글 번역"}';
+  var prompt = '영단어 "'+word+'"에 대해 다음 JSON 형식으로만 응답하세요 (설명 없이 순수 JSON만):\n'+
+    '{\n'+
+    '  "meanings": [\n'+
+    '    {"pos":"형용사","ko":"한글 뜻 (여러 개는 쉼표로)"},\n'+
+    '    {"pos":"명사","ko":"한글 뜻"}\n'+
+    '  ],\n'+
+    '  "example":"쉬운 영어 예문 한 문장 (중학생 수준)",\n'+
+    '  "translation":"위 예문의 한글 번역"\n'+
+    '}\n\n'+
+    '주의사항:\n'+
+    '- meanings는 실제 자주 쓰이는 뜻 위주로 1~3개 (드문 뜻 제외)\n'+
+    '- ko는 반드시 순수 한글로. 외래어 음차(예: "스페셜") 금지. 반드시 순우리말 또는 한자어로 번역\n'+
+    '- pos는 "형용사","명사","동사","부사","전치사","접속사","숙어" 중 하나\n'+
+    '- 단어를 인식 못하면 meanings를 빈 배열로';
   try{
     var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+encodeURIComponent(settings.geminiKey), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         contents:[{parts:[{text:prompt}]}],
-        generationConfig:{ temperature:0.7, maxOutputTokens:200 }
+        generationConfig:{ temperature:0.3, maxOutputTokens:500, responseMimeType:'application/json' }
       })
     });
     if(!res.ok) return null;
@@ -1296,16 +1336,31 @@ async function generateExample(word){
       && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
       && data.candidates[0].content.parts[0].text;
     if(!text) return null;
-    // JSON 추출 (markdown 코드블록 감싸져 있어도 대응)
     var jsonMatch = text.match(/\{[\s\S]*\}/);
     if(!jsonMatch) return null;
     var parsed = JSON.parse(jsonMatch[0]);
-    if(!parsed.example || !parsed.translation) return null;
-    return { example: parsed.example.trim(), translation: parsed.translation.trim() };
+    if(!parsed.meanings || !Array.isArray(parsed.meanings) || !parsed.meanings.length) return null;
+    // 정제
+    parsed.meanings = parsed.meanings
+      .filter(function(m){ return m && m.ko; })
+      .map(function(m){ return { pos: (m.pos||'').trim(), ko: (m.ko||'').trim() }; });
+    if(!parsed.meanings.length) return null;
+    return {
+      meanings: parsed.meanings,
+      example: (parsed.example||'').trim(),
+      translation: (parsed.translation||'').trim()
+    };
   }catch(e){
-    console.warn('Gemini 예문 실패:', e);
+    console.warn('Gemini 뜻 생성 실패:', e);
     return null;
   }
+}
+
+// (기존 이름 호환용 - 다른 곳에서 아직 부를 수 있음)
+async function generateExample(word){
+  var result = await generateMeaningAndExample(word);
+  if(!result) return null;
+  return { example: result.example, translation: result.translation };
 }
 
 // ========== DICTIONARY (IndexedDB 캐싱 + 발음 URL) ==========
@@ -1478,26 +1533,39 @@ function processWord(word){
     });
     return chain;
   }).then(function(){
-    return translate(finalWord);
-  }).then(function(ko){
-    var entry = {
-      id:'w'+Date.now()+Math.random().toString(36).slice(2,7),
-      en:finalWord, ko:ko, corrected:corrected, original:original,
-      wrongCount:0, createdAt:Date.now(),
-      reviewLevel:0, lastReviewDate:null, nextReviewDate:Date.now(),
-      example:'', exampleKo:''
-    };
-    // Gemini 예문 (활성화된 경우, 실패해도 조용히)
+    // Gemini 활성화 시: 뜻+예문 한번에 (품질 우수)
     if(settings.useGemini && settings.geminiKey){
-      return generateExample(finalWord).then(function(ex){
-        if(ex){
-          entry.example = ex.example;
-          entry.exampleKo = ex.translation;
+      return generateMeaningAndExample(finalWord).then(function(result){
+        if(result && result.meanings.length){
+          // 대표 뜻: 모든 meanings의 ko 합쳐서
+          var koCombined = result.meanings.map(function(m){ return m.ko; }).join(', ');
+          return {
+            ko: koCombined,
+            meanings: result.meanings,
+            example: result.example || '',
+            exampleKo: result.translation || ''
+          };
         }
-        return entry;
+        // Gemini 실패 시 MyMemory 폴백
+        return translate(finalWord).then(function(ko){
+          return { ko: ko, meanings: [], example: '', exampleKo: '' };
+        });
       });
     }
-    return entry;
+    // Gemini 미사용: 기존 MyMemory
+    return translate(finalWord).then(function(ko){
+      return { ko: ko, meanings: [], example: '', exampleKo: '' };
+    });
+  }).then(function(info){
+    return {
+      id:'w'+Date.now()+Math.random().toString(36).slice(2,7),
+      en:finalWord, ko:info.ko,
+      meanings: info.meanings || [],
+      example: info.example || '', exampleKo: info.exampleKo || '',
+      corrected:corrected, original:original,
+      wrongCount:0, createdAt:Date.now(),
+      reviewLevel:0, lastReviewDate:null, nextReviewDate:Date.now()
+    };
   });
 }
 
@@ -1586,7 +1654,26 @@ function renderList(){
     html+='<div class="card-top"><div style="flex:1;">';
     html+='<div class="c-en" onclick="speakWord(\''+e.en.replace(/'/g,"\\'")+'\', this)">'+e.en+' <span class="spk">🔊</span></div>';
     if(e.corrected) html+='<div class="c-fix"><s>'+e.original+'</s> → '+e.en+' (OCR 보정)</div>';
-    html+='<div class="c-ko"><input type="text" value="'+(e.ko||'').replace(/"/g,'&quot;')+'" onblur="editKo(\''+e.id+'\',this.value)" placeholder="뜻 입력..."></div>';
+    
+    // meanings 배열이 있으면 번호 매겨서 표시 (품사 포함)
+    if(e.meanings && e.meanings.length){
+      html+='<div class="c-meanings">';
+      e.meanings.forEach(function(mn, i){
+        var num = ['①','②','③','④','⑤'][i] || (i+1)+'.';
+        html+='<div class="mn-row">'+
+          '<span class="mn-num">'+num+'</span>'+
+          (mn.pos?'<span class="mn-pos">'+mn.pos+'</span>':'')+
+          '<span class="mn-ko">'+mn.ko+'</span>'+
+          '</div>';
+      });
+      html+='</div>';
+      // 편집용 input은 숨겨진 상태 (더블탭이나 수정 버튼으로 노출 가능)
+      html+='<div class="c-ko-edit"><input type="text" value="'+(e.ko||'').replace(/"/g,'&quot;')+'" onblur="editKo(\''+e.id+'\',this.value)" placeholder="뜻 편집..."></div>';
+    } else {
+      // meanings 없으면 기존 방식 (한 줄 입력란)
+      html+='<div class="c-ko"><input type="text" value="'+(e.ko||'').replace(/"/g,'&quot;')+'" onblur="editKo(\''+e.id+'\',this.value)" placeholder="뜻 입력..."></div>';
+    }
+    
     if(e.example){
       html+='<div class="c-example" onclick="speakWord(\''+e.en.replace(/'/g,"\\'")+'\', this)">'+
         '<div class="ex-en">"'+e.example.replace(/"/g,'&quot;')+'"</div>'+
@@ -1596,6 +1683,10 @@ function renderList(){
     html+='<div class="c-meta">';
     html+='<span class="lv" title="레벨 '+lv+'/5">'+lvStars+'</span>';
     if(e.wrongCount>0) html+=' <span class="c-wrong">오답 '+e.wrongCount+'회</span>';
+    // Gemini 활성 시 재생성 버튼
+    if(settings.useGemini && settings.geminiKey){
+      html+=' <button class="regen-btn" onclick="regenerateWord(\''+e.id+'\', this)" title="뜻·예문 다시 생성">🔄</button>';
+    }
     html+='</div>';
     html+='</div><button class="del-btn" onclick="delWord(\''+e.id+'\')">🗑</button></div></div>';
   });
@@ -1605,6 +1696,34 @@ function renderList(){
 function editKo(id,val){
   var e = entries.find(function(x){return x.id===id;});
   if(e){ e.ko=val.trim(); save(); }
+}
+
+// Gemini로 뜻·예문 다시 생성
+function regenerateWord(id, btn){
+  var e = entries.find(function(x){return x.id===id;});
+  if(!e) return;
+  if(!settings.useGemini || !settings.geminiKey){
+    alert('설정에서 Gemini를 활성화하고 API 키를 입력해주세요.');
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = '⏳'; }
+  generateMeaningAndExample(e.en).then(function(result){
+    if(result && result.meanings.length){
+      e.meanings = result.meanings;
+      e.ko = result.meanings.map(function(m){ return m.ko; }).join(', ');
+      if(result.example) e.example = result.example;
+      if(result.translation) e.exampleKo = result.translation;
+      save();
+      renderList();
+    } else {
+      alert('뜻 생성에 실패했어요. API 키 또는 인터넷 연결을 확인해주세요.');
+      if(btn){ btn.disabled = false; btn.textContent = '🔄'; }
+    }
+  }).catch(function(err){
+    console.error(err);
+    alert('오류: '+(err.message||'알 수 없음'));
+    if(btn){ btn.disabled = false; btn.textContent = '🔄'; }
+  });
 }
 function delWord(id){
   entries = entries.filter(function(x){return x.id!==id;});
@@ -1695,14 +1814,29 @@ function koVariants(s){
 function getAnswers(entry,m){
   if(m==='en2ko'){
     var raw = entry.ko || '';
-    // 다양한 구분자로 분리: / , ; · • 、 ， ；
     var parts = raw.split(/[\/,;·•、，；]/).map(function(s){return s.trim();}).filter(Boolean);
+    // meanings 배열이 있으면 각 뜻도 추가
+    if(entry.meanings && entry.meanings.length){
+      entry.meanings.forEach(function(mn){
+        if(mn.ko){
+          mn.ko.split(/[\/,;·•、，；]/).forEach(function(k){
+            var t = k.trim();
+            if(t) parts.push(t);
+          });
+        }
+      });
+    }
     // 각 정답에 어미 변형 추가
     var all = [];
     parts.forEach(function(p){
       koVariants(p).forEach(function(v){ all.push(normAns(v)); });
     });
-    return all.filter(Boolean);
+    // 중복 제거
+    var seen = {};
+    return all.filter(function(a){ 
+      if(!a || seen[a]) return false; 
+      seen[a] = true; return true; 
+    });
   }
   return [normAns(entry.en)];
 }
@@ -1731,7 +1865,17 @@ function matchAnswer(userAns, correctList, mode){
 function showCard(){
   if(ss.idx>=ss.queue.length){ showEnd(); return; }
   var e=ss.queue[ss.idx];
-  var prompt = ss.mode==='en2ko'?e.en:(e.ko||'').split(/[\/,;]/)[0].trim();
+  var prompt;
+  if(ss.mode==='en2ko'){
+    prompt = e.en;
+  } else {
+    // 대표 뜻: meanings 첫 번째 또는 ko의 첫 부분
+    if(e.meanings && e.meanings.length && e.meanings[0].ko){
+      prompt = e.meanings[0].ko.split(/[\/,;·•、，；]/)[0].trim();
+    } else {
+      prompt = (e.ko||'').split(/[\/,;·•、，；]/)[0].trim();
+    }
+  }
   var label = ss.mode==='en2ko'?'영어 단어를 보고 한글 뜻 입력':'한글 뜻을 보고 영어 단어 입력';
   var cls = ss.mode==='en2ko'?'':'ko';
   ss.hintLevel = 0;
@@ -1914,14 +2058,21 @@ function revealAnswer(){
   if(hintBtn) hintBtn.disabled = true;
   ss.revealed = true;
 
-  // 정답 표시 (영어 단어인 경우 발음 듣기 가능)
   var displayAns;
   if(ss.mode === 'ko2en'){
     var safeEn = e.en.replace(/'/g, "\\'");
     displayAns = '<span onclick="speakWord(\''+safeEn+'\', this)" style="cursor:pointer;border-bottom:1px dashed currentColor;">'+
       e.en+' 🔊</span>';
   } else {
-    displayAns = e.ko || '';
+    // 한글 뜻: meanings가 있으면 여러 개 표시
+    if(e.meanings && e.meanings.length){
+      displayAns = e.meanings.map(function(m, i){
+        var num = ['①','②','③','④','⑤'][i] || (i+1)+'.';
+        return num+' '+(m.pos?'('+m.pos+') ':'')+m.ko;
+      }).join(' &nbsp; ');
+    } else {
+      displayAns = e.ko || '';
+    }
   }
 
   document.getElementById('sFb').innerHTML =
