@@ -200,11 +200,14 @@ details.raw pre{
 
 /* 설정 버튼 + 모달 */
 .gear{
-  position:absolute;top:18px;right:18px;
-  width:36px;height:36px;border-radius:50%;border:none;
-  background:rgba(255,255,255,.15);color:#F1F0E8;font-size:18px;
+  position:absolute;top:14px;right:14px;
+  width:40px;height:40px;border-radius:50%;border:none;
+  background:#1F6F64;color:#F1F0E8;font-size:19px;
   cursor:pointer;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 8px rgba(31,111,100,.35);
+  z-index:5;
 }
+.gear:active{background:#17554C;transform:scale(.95);}
 .modal-bg{
   position:fixed;inset:0;background:rgba(0,0,0,.5);
   display:none;align-items:flex-end;justify-content:center;z-index:100;
@@ -365,6 +368,46 @@ details.raw pre{
 
 /* ============ 여러 뜻 표시 (Gemini) ============ */
 .c-meanings{margin-top:6px;padding:8px 10px;background:#FAFAF6;border-radius:8px;}
+
+/* ============ 재생성 배너 (단어장 상단) ============ */
+.regen-banner{
+  background:linear-gradient(135deg,#FFF9E8,#FDE9B8);
+  border:1px solid #E5C97C;border-radius:12px;
+  padding:14px;margin:10px 0 12px;
+}
+.rb-text{font-size:13px;color:#7A6020;line-height:1.6;margin-bottom:10px;}
+.rb-text b{color:#9A6810;}
+.regen-banner .btn{padding:8px 14px;font-size:13px;width:100%;}
+
+/* ============ 재생성 오버레이 ============ */
+.regen-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);
+  display:none;align-items:center;justify-content:center;
+  z-index:250;padding:20px;
+}
+.regen-overlay.show{display:flex;}
+.regen-box{
+  background:#F1F0E8;border-radius:16px;
+  padding:24px 20px;max-width:340px;width:100%;
+  text-align:center;
+}
+.regen-title{
+  font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:600;
+  color:#1F6F64;margin-bottom:16px;
+}
+.regen-bar-outer{
+  height:8px;background:#DCEAE6;border-radius:4px;overflow:hidden;
+  margin-bottom:10px;
+}
+.regen-bar{
+  height:100%;background:linear-gradient(90deg,#1F6F64,#2A9086);
+  width:0%;transition:width .3s ease;
+}
+.regen-prog{font-size:13px;color:#1E2A26;font-weight:500;}
+.regen-cur{
+  font-family:'IBM Plex Mono',monospace;font-size:12.5px;
+  color:#566059;margin:8px 0 16px;min-height:16px;
+}
 .mn-row{display:flex;align-items:baseline;gap:6px;padding:2px 0;font-size:13px;line-height:1.5;}
 .mn-num{color:#1F6F64;font-weight:600;font-size:12px;min-width:14px;flex-shrink:0;}
 .mn-pos{
@@ -532,6 +575,7 @@ details.raw pre{
   <!-- LIST -->
   <div class="sec" id="sec-list">
     <input type="text" class="search" id="searchIn" placeholder="단어 검색..." oninput="onSearchInput()">
+    <div id="regenBanner" style="display:none;"></div>
     <div class="cnt" id="listCnt"></div>
     <div id="listWrap"></div>
     <div class="foot-link" onclick="resetAll()">전체 단어 삭제</div>
@@ -579,6 +623,17 @@ details.raw pre{
   <div class="modal" onclick="event.stopPropagation()">
     <h3>🏅 뱃지 컬렉션 <button onclick="closeBadgeCollection()">×</button></h3>
     <div id="badgeArea"></div>
+  </div>
+</div>
+
+<!-- 일괄 재생성 오버레이 -->
+<div class="regen-overlay" id="regenOverlay">
+  <div class="regen-box">
+    <div class="regen-title">🤖 Gemini로 뜻·예문 재생성</div>
+    <div class="regen-bar-outer"><div class="regen-bar" id="regenBar"></div></div>
+    <div class="regen-prog" id="regenProg">준비 중...</div>
+    <div class="regen-cur" id="regenCur"></div>
+    <button class="btn btn-g" onclick="abortRegen()">중단</button>
   </div>
 </div>
 
@@ -1322,7 +1377,7 @@ async function generateMeaningAndExample(word){
     '- pos는 "형용사","명사","동사","부사","전치사","접속사","숙어" 중 하나\n'+
     '- 단어를 인식 못하면 meanings를 빈 배열로';
   try{
-    var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+encodeURIComponent(settings.geminiKey), {
+    var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(settings.geminiKey), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -1642,6 +1697,28 @@ function renderList(){
     return !q || e.en.toLowerCase().indexOf(q)!==-1 || (e.ko||'').indexOf(q)!==-1;
   });
   document.getElementById('listCnt').textContent='총 '+entries.length+'개'+(q?' · 검색 '+filtered.length+'개':'');
+  
+  // 재생성 배너 (Gemini 활성 + 여러 뜻 없는 단어가 있을 때)
+  var banner = document.getElementById('regenBanner');
+  if(banner){
+    if(settings.useGemini && settings.geminiKey && entries.length){
+      var missing = entries.filter(function(e){ return !(e.meanings && e.meanings.length); }).length;
+      if(missing > 0){
+        banner.style.display = 'block';
+        banner.innerHTML = 
+          '<div class="regen-banner">'+
+            '<div class="rb-text">💡 <b>'+missing+'개 단어</b>가 아직 대표 뜻만 있어요.<br>Gemini로 여러 뜻을 자동 생성할 수 있어요.</div>'+
+            '<button class="btn btn-p" onclick="regenerateAll(true)">🔄 부족한 것만 재생성</button>'+
+            '<button class="btn btn-g" onclick="regenerateAll(false)" style="margin-top:6px;">전체 재생성</button>'+
+          '</div>';
+      } else {
+        banner.style.display = 'none';
+      }
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+  
   if(!entries.length){
     document.getElementById('listWrap').innerHTML='<div class="empty">아직 단어가 없어요.<br>촬영 탭에서 사진을 찍고 단어를 추가해보세요.</div>';
     return;
@@ -1724,6 +1801,80 @@ function regenerateWord(id, btn){
     alert('오류: '+(err.message||'알 수 없음'));
     if(btn){ btn.disabled = false; btn.textContent = '🔄'; }
   });
+}
+
+// 일괄 재생성 (기존 단어들 전부 Gemini로 뜻·예문 새로 생성)
+var regenAborted = false;
+async function regenerateAll(onlyMissing){
+  if(!settings.useGemini || !settings.geminiKey){
+    alert('설정에서 Gemini를 먼저 활성화하고 API 키를 입력해주세요.');
+    return;
+  }
+  var target = onlyMissing
+    ? entries.filter(function(e){ return !(e.meanings && e.meanings.length); })
+    : entries.slice();
+
+  if(!target.length){
+    alert(onlyMissing ? '모든 단어에 이미 여러 뜻이 있어요! ✨' : '단어가 없어요.');
+    return;
+  }
+
+  var minutes = Math.ceil(target.length * 4.5 / 60);
+  var msg = target.length+'개 단어를 Gemini로 재생성합니다.\n'+
+    '예상 시간: 약 '+minutes+'분 (분당 15회 제한 준수)\n\n계속할까요?';
+  if(!confirm(msg)) return;
+
+  regenAborted = false;
+  var overlay = document.getElementById('regenOverlay');
+  var progEl = document.getElementById('regenProg');
+  var barEl = document.getElementById('regenBar');
+  var curEl = document.getElementById('regenCur');
+  overlay.classList.add('show');
+
+  var done=0, failed=0;
+  for(var i=0; i<target.length; i++){
+    if(regenAborted) break;
+    var e = target[i];
+    var pct = Math.round((i / target.length) * 100);
+    progEl.textContent = (i+1)+' / '+target.length+' (성공 '+done+', 실패 '+failed+')';
+    barEl.style.width = pct + '%';
+    curEl.textContent = e.en;
+
+    try {
+      var result = await generateMeaningAndExample(e.en);
+      if(result && result.meanings.length){
+        e.meanings = result.meanings;
+        e.ko = result.meanings.map(function(m){ return m.ko; }).join(', ');
+        if(result.example) e.example = result.example;
+        if(result.translation) e.exampleKo = result.translation;
+        done++;
+      } else {
+        failed++;
+      }
+    } catch(err){
+      console.error(err);
+      failed++;
+    }
+    try{ save(); }catch(err){}
+
+    // Rate limit: 분당 15회 = 단어 하나 처리에 4초 이상 대기
+    if(i < target.length - 1 && !regenAborted){
+      await new Promise(function(r){ setTimeout(r, 4200); });
+    }
+  }
+
+  barEl.style.width = '100%';
+  progEl.textContent = '완료! 성공 '+done+'개, 실패 '+failed+'개';
+  curEl.textContent = regenAborted ? '(중단됨)' : '';
+  setTimeout(function(){
+    overlay.classList.remove('show');
+    renderList();
+  }, 1500);
+}
+
+function abortRegen(){
+  regenAborted = true;
+  document.getElementById('regenCur').textContent = '중단 중...';
 }
 function delWord(id){
   entries = entries.filter(function(x){return x.id!==id;});
@@ -2143,10 +2294,33 @@ function toggleGemini(){
   settings.useGemini = document.getElementById('useGeminiChk').checked;
   document.getElementById('geminiKeyBox').style.display = settings.useGemini?'block':'none';
   saveSettings();
+  refreshRegenBanner();
 }
 function saveGeminiKey(){
   settings.geminiKey = document.getElementById('geminiKeyInput').value.trim();
   saveSettings();
+  refreshRegenBanner();
+}
+// 단어장이 열려있지 않아도 안전하게 배너만 갱신 (전체 리스트 재렌더링 없이)
+function refreshRegenBanner(){
+  var banner = document.getElementById('regenBanner');
+  if(!banner) return;
+  if(settings.useGemini && settings.geminiKey && entries.length){
+    var missing = entries.filter(function(e){ return !(e.meanings && e.meanings.length); }).length;
+    if(missing > 0){
+      banner.style.display = 'block';
+      banner.innerHTML =
+        '<div class="regen-banner">'+
+          '<div class="rb-text">💡 <b>'+missing+'개 단어</b>가 아직 대표 뜻만 있어요.<br>Gemini로 여러 뜻을 자동 생성할 수 있어요.</div>'+
+          '<button class="btn btn-p" onclick="regenerateAll(true)">🔄 부족한 것만 재생성</button>'+
+          '<button class="btn btn-g" onclick="regenerateAll(false)" style="margin-top:6px;">전체 재생성</button>'+
+        '</div>';
+    } else {
+      banner.style.display = 'none';
+    }
+  } else {
+    banner.style.display = 'none';
+  }
 }
 function closeBadgeCollectionBg(e){
   if(e.target.id === 'badgeModal') closeBadgeCollection();
