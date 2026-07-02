@@ -1547,6 +1547,17 @@ function closeBadgeCollection(){
 }
 
 // ========== GEMINI: 뜻 + 품사 + 예문 통합 생성 ==========
+// 429(rate limit) 발생 시 자동으로 대기 후 1회 재시도하는 fetch 래퍼
+async function fetchGeminiWithRetry(url, options){
+  var res = await fetch(url, options);
+  if(res.status === 429){
+    // 무료 한도 초과 - 8초 대기 후 한 번만 재시도
+    await new Promise(function(r){ setTimeout(r, 8000); });
+    res = await fetch(url, options);
+  }
+  return res;
+}
+
 async function generateMeaningAndExample(word){
   if(!settings.useGemini || !settings.geminiKey) return null;
   var prompt = '영단어 "'+word+'"에 대해 다음 JSON 형식으로만 응답하세요 (설명 없이 순수 JSON만):\n'+
@@ -1564,7 +1575,7 @@ async function generateMeaningAndExample(word){
     '- pos는 "형용사","명사","동사","부사","전치사","접속사","숙어" 중 하나\n'+
     '- 단어를 인식 못하면 meanings를 빈 배열로';
   try{
-    var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(settings.geminiKey), {
+    var res = await fetchGeminiWithRetry('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(settings.geminiKey), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -1603,6 +1614,76 @@ async function generateExample(word){
   var result = await generateMeaningAndExample(word);
   if(!result) return null;
   return { example: result.example, translation: result.translation };
+}
+
+// ========== GEMINI 배치 처리 (여러 단어 한 번에) ==========
+// 단어 하나씩 API 호출하는 대신 한 번에 묶어서 요청 → 속도 대폭 향상 + rate limit 절약
+async function generateMeaningsBatch(words){
+  if(!settings.useGemini || !settings.geminiKey || !words.length) return {};
+  var wordList = words.map(function(w,i){ return (i+1)+'. '+w; }).join('\n');
+  var prompt = '다음 영단어 목록 각각에 대해 뜻/품사/예문을 생성하세요.\n\n'+wordList+'\n\n'+
+    '아래 JSON 형식으로만 응답하세요 (설명 없이 순수 JSON만, 입력된 모든 단어에 대해 빠짐없이 결과 포함):\n'+
+    '{\n'+
+    '  "results": [\n'+
+    '    {\n'+
+    '      "word":"입력된 단어 원문 그대로",\n'+
+    '      "meanings": [{"pos":"형용사","ko":"한글 뜻(여러개는 쉼표로)"}],\n'+
+    '      "example":"쉬운 영어 예문 한 문장 (중학생 수준)",\n'+
+    '      "translation":"위 예문의 한글 번역"\n'+
+    '    }\n'+
+    '  ]\n'+
+    '}\n\n'+
+    '주의사항:\n'+
+    '- meanings는 실제 자주 쓰이는 뜻 위주로 1~3개\n'+
+    '- ko는 반드시 순수 한글로. 외래어 음차(예: "스페셜") 금지. 순우리말/한자어로 번역\n'+
+    '- pos는 "형용사","명사","동사","부사","전치사","접속사","숙어" 중 하나\n'+
+    '- 단어를 인식 못하거나 오타로 판단되면 그 단어의 meanings를 빈 배열로 (다른 단어는 계속 처리)\n'+
+    '- word 필드는 입력받은 철자를 그대로 반환 (수정하지 말 것)';
+  try{
+    var res = await fetchGeminiWithRetry('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(settings.geminiKey), {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        contents:[{parts:[{text:prompt}]}],
+        generationConfig:{ temperature:0.3, maxOutputTokens:4000, responseMimeType:'application/json' }
+      })
+    });
+    if(!res.ok) return {};
+    var data = await res.json();
+    var text = data && data.candidates && data.candidates[0] && data.candidates[0].content
+      && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
+      && data.candidates[0].content.parts[0].text;
+    if(!text) return {};
+    var jsonMatch = text.match(/\{[\s\S]*\}/);
+    if(!jsonMatch) return {};
+    var parsed = JSON.parse(jsonMatch[0]);
+    if(!parsed.results || !Array.isArray(parsed.results)) return {};
+    var map = {};
+    parsed.results.forEach(function(r){
+      if(!r || !r.word) return;
+      var key = r.word.toLowerCase().trim();
+      var meanings = (r.meanings || [])
+        .filter(function(m){ return m && m.ko; })
+        .map(function(m){ return { pos:(m.pos||'').trim(), ko:(m.ko||'').trim() }; });
+      if(!meanings.length) return; // 인식 실패한 단어는 맵에 안 넣음 (호출측에서 폴백 처리)
+      map[key] = {
+        meanings: meanings,
+        example: (r.example||'').trim(),
+        translation: (r.translation||'').trim()
+      };
+    });
+    return map;
+  }catch(e){
+    console.warn('Gemini 배치 생성 실패:', e);
+    return {};
+  }
+}
+
+// 배열을 지정 크기로 나누기 (배치 청크용)
+function chunkArray(arr, size){
+  var out = [];
+  for(var i=0; i<arr.length; i+=size) out.push(arr.slice(i, i+size));
+  return out;
 }
 
 // ========== DICTIONARY (IndexedDB 캐싱 + 발음 URL) ==========
@@ -1758,57 +1839,69 @@ var OCR_FIX = [
   function(w){return w.replace(/cl/g,'d');}
 ];
 
-function processWord(word){
-  var finalWord=word, corrected=false, original=null;
+// 사전 확인 + OCR 오타 보정 (병렬 처리로 속도 개선)
+// Gemini 미사용 시, 또는 Gemini가 단어를 인식 못했을 때의 폴백 경로에서 사용
+function findValidWord(word){
   return checkDict(word).then(function(ok){
-    if(ok) return;
-    var chain = Promise.resolve();
-    OCR_FIX.forEach(function(fn){
-      chain = chain.then(function(){
-        if(corrected) return;
-        var c = fn(word);
-        if(c===word) return;
-        return checkDict(c).then(function(ok2){
-          if(ok2){ finalWord=c; corrected=true; original=word; }
-        });
-      });
+    if(ok) return { word: word, corrected: false, original: null };
+    // 모든 보정 후보를 동시에 확인 (순차 대기 없음)
+    var candidates = OCR_FIX.map(function(fn){ return fn(word); })
+      .filter(function(c){ return c !== word; });
+    return Promise.all(candidates.map(function(c){
+      return checkDict(c).then(function(ok2){ return ok2 ? c : null; });
+    })).then(function(results){
+      var found = results.find(function(r){ return r; });
+      if(found) return { word: found, corrected: true, original: word };
+      return { word: word, corrected: false, original: null };
     });
-    return chain;
-  }).then(function(){
-    // Gemini 활성화 시: 뜻+예문 한번에 (품질 우수)
-    if(settings.useGemini && settings.geminiKey){
-      return generateMeaningAndExample(finalWord).then(function(result){
-        if(result && result.meanings.length){
-          // 대표 뜻: 모든 meanings의 ko 합쳐서
-          var koCombined = result.meanings.map(function(m){ return m.ko; }).join(', ');
-          return {
-            ko: koCombined,
-            meanings: result.meanings,
-            example: result.example || '',
-            exampleKo: result.translation || ''
-          };
-        }
-        // Gemini 실패 시 MyMemory 폴백
-        return translate(finalWord).then(function(ko){
-          return { ko: ko, meanings: [], example: '', exampleKo: '' };
-        });
-      });
-    }
-    // Gemini 미사용: 기존 MyMemory
-    return translate(finalWord).then(function(ko){
-      return { ko: ko, meanings: [], example: '', exampleKo: '' };
-    });
-  }).then(function(info){
-    return {
-      id:'w'+Date.now()+Math.random().toString(36).slice(2,7),
-      en:finalWord, ko:info.ko,
-      meanings: info.meanings || [],
-      example: info.example || '', exampleKo: info.exampleKo || '',
-      corrected:corrected, original:original,
-      wrongCount:0, createdAt:Date.now(),
-      reviewLevel:0, lastReviewDate:null, nextReviewDate:Date.now()
-    };
   });
+}
+
+function processWord(word){
+  // ── Gemini 활성화: 사전 확인 없이 바로 Gemini에게 물어봄 (훨씬 빠름) ──
+  if(settings.useGemini && settings.geminiKey){
+    return generateMeaningAndExample(word).then(function(result){
+      if(result && result.meanings.length){
+        var koCombined = result.meanings.map(function(m){ return m.ko; }).join(', ');
+        return buildEntry(word, koCombined, result.meanings, result.example, result.translation, false, null);
+      }
+      // Gemini가 단어를 못 알아봤을 때만 OCR 보정 + Gemini 재시도
+      return findValidWord(word).then(function(fixed){
+        if(fixed.corrected){
+          return generateMeaningAndExample(fixed.word).then(function(result2){
+            if(result2 && result2.meanings.length){
+              var koCombined2 = result2.meanings.map(function(m){ return m.ko; }).join(', ');
+              return buildEntry(fixed.word, koCombined2, result2.meanings, result2.example, result2.translation, true, word);
+            }
+            return translate(fixed.word).then(function(ko){
+              return buildEntry(fixed.word, ko, [], '', '', fixed.corrected, fixed.original);
+            });
+          });
+        }
+        return translate(word).then(function(ko){
+          return buildEntry(word, ko, [], '', '', false, null);
+        });
+      });
+    });
+  }
+  // ── Gemini 미사용: 기존 사전확인 + MyMemory 번역 ──
+  return findValidWord(word).then(function(fixed){
+    return translate(fixed.word).then(function(ko){
+      return buildEntry(fixed.word, ko, [], '', '', fixed.corrected, fixed.original);
+    });
+  });
+}
+
+function buildEntry(en, ko, meanings, example, exampleKo, corrected, original){
+  return {
+    id:'w'+Date.now()+Math.random().toString(36).slice(2,7),
+    en:en, ko:ko,
+    meanings: meanings || [],
+    example: example || '', exampleKo: exampleKo || '',
+    corrected:corrected, original:original,
+    wrongCount:0, createdAt:Date.now(),
+    reviewLevel:0, lastReviewDate:null, nextReviewDate:Date.now()
+  };
 }
 
 function addSelected(){
@@ -1838,19 +1931,7 @@ function addSelected(){
     rows[word] = row;
   });
 
-  // 병렬 처리 (체인 대신 Promise.all)
-  Promise.all(sel.map(function(word){
-    return processWord(word).then(function(result){
-      var row = rows[word];
-      if(result.ko){
-        entries.push(result);
-        row.querySelector('span:last-child').textContent='✓ '+result.ko+(result.corrected?' (보정: '+result.original+'→'+result.en+')':'');
-      } else {
-        row.querySelector('span:last-child').textContent='⚠ 뜻 찾기 실패';
-        needsManual.push(result);
-      }
-    });
-  })).then(function(){
+  function finishAdd(){
     save();
     checkBadges();
     btn.disabled=false;
@@ -1863,7 +1944,67 @@ function addSelected(){
       document.getElementById('manArea').innerHTML=html;
       window._needsManual = needsManual;
     }
-  });
+  }
+
+  // ── Gemini 활성화: 배치로 한 번에 처리 (훨씬 빠름, API 호출 최소화) ──
+  if(settings.useGemini && settings.geminiKey){
+    var chunks = chunkArray(sel, 15); // 한 번에 최대 15개씩
+    var chunkChain = Promise.resolve();
+    var leftover = []; // 배치에서 인식 못한 단어들 (개별 폴백 대상)
+
+    chunks.forEach(function(chunk){
+      chunkChain = chunkChain.then(function(){
+        return generateMeaningsBatch(chunk).then(function(map){
+          chunk.forEach(function(word){
+            var key = word.toLowerCase();
+            var hit = map[key];
+            var row = rows[word];
+            if(hit){
+              var koCombined = hit.meanings.map(function(m){ return m.ko; }).join(', ');
+              var entry = buildEntry(word, koCombined, hit.meanings, hit.example, hit.translation, false, null);
+              entries.push(entry);
+              row.querySelector('span:last-child').textContent = '✓ ' + koCombined;
+            } else {
+              leftover.push(word);
+              row.querySelector('span:last-child').textContent = '⏳ 재확인 중...';
+            }
+          });
+        });
+      });
+    });
+
+    chunkChain.then(function(){
+      if(!leftover.length){ finishAdd(); return; }
+      // 배치에서 놓친 단어들만 개별적으로 폴백 처리 (OCR 보정 + 재시도)
+      return Promise.all(leftover.map(function(word){
+        return processWord(word).then(function(result){
+          var row = rows[word];
+          if(result.ko){
+            entries.push(result);
+            row.querySelector('span:last-child').textContent='✓ '+result.ko+(result.corrected?' (보정: '+result.original+'→'+result.en+')':'');
+          } else {
+            row.querySelector('span:last-child').textContent='⚠ 뜻 찾기 실패';
+            needsManual.push(result);
+          }
+        });
+      })).then(finishAdd);
+    });
+    return;
+  }
+
+  // ── Gemini 미사용: 기존 개별 병렬 처리 ──
+  Promise.all(sel.map(function(word){
+    return processWord(word).then(function(result){
+      var row = rows[word];
+      if(result.ko){
+        entries.push(result);
+        row.querySelector('span:last-child').textContent='✓ '+result.ko+(result.corrected?' (보정: '+result.original+'→'+result.en+')':'');
+      } else {
+        row.querySelector('span:last-child').textContent='⚠ 뜻 찾기 실패';
+        needsManual.push(result);
+      }
+    });
+  })).then(finishAdd);
 }
 
 function saveManual(){
@@ -2006,9 +2147,10 @@ async function regenerateAll(onlyMissing){
     return;
   }
 
-  var minutes = Math.ceil(target.length * 4.5 / 60);
-  var msg = target.length+'개 단어를 Gemini로 재생성합니다.\n'+
-    '예상 시간: 약 '+minutes+'분 (분당 15회 제한 준수)\n\n계속할까요?';
+  var chunks = chunkArray(target, 15); // 15개씩 묶어서 처리
+  var minutes = Math.max(1, Math.ceil(chunks.length * 6.7 / 60));
+  var msg = target.length+'개 단어를 Gemini로 재생성합니다 (배치 처리, '+chunks.length+'회 호출).\n'+
+    '예상 시간: 약 '+minutes+'분\n\n계속할까요?';
   if(!confirm(msg)) return;
 
   regenAborted = false;
@@ -2018,35 +2160,42 @@ async function regenerateAll(onlyMissing){
   var curEl = document.getElementById('regenCur');
   overlay.classList.add('show');
 
-  var done=0, failed=0;
-  for(var i=0; i<target.length; i++){
+  var done=0, failed=0, processed=0;
+
+  for(var c=0; c<chunks.length; c++){
     if(regenAborted) break;
-    var e = target[i];
-    var pct = Math.round((i / target.length) * 100);
-    progEl.textContent = (i+1)+' / '+target.length+' (성공 '+done+', 실패 '+failed+')';
+    var chunk = chunks[c];
+    var pct = Math.round((processed / target.length) * 100);
+    progEl.textContent = processed+' / '+target.length+' (성공 '+done+', 실패 '+failed+')';
     barEl.style.width = pct + '%';
-    curEl.textContent = e.en;
+    curEl.textContent = chunk.map(function(e){return e.en;}).slice(0,3).join(', ') + (chunk.length>3?' 외 '+(chunk.length-3)+'개':'');
 
     try {
-      var result = await generateMeaningAndExample(e.en);
-      if(result && result.meanings.length){
-        e.meanings = result.meanings;
-        e.ko = result.meanings.map(function(m){ return m.ko; }).join(', ');
-        if(result.example) e.example = result.example;
-        if(result.translation) e.exampleKo = result.translation;
-        done++;
-      } else {
-        failed++;
-      }
+      var words = chunk.map(function(e){ return e.en; });
+      var map = await generateMeaningsBatch(words);
+      chunk.forEach(function(e){
+        var hit = map[e.en.toLowerCase()];
+        if(hit){
+          e.meanings = hit.meanings;
+          e.ko = hit.meanings.map(function(m){ return m.ko; }).join(', ');
+          if(hit.example) e.example = hit.example;
+          if(hit.translation) e.exampleKo = hit.translation;
+          done++;
+        } else {
+          failed++;
+        }
+        processed++;
+      });
     } catch(err){
       console.error(err);
-      failed++;
+      failed += chunk.length;
+      processed += chunk.length;
     }
     try{ save(); }catch(err){}
 
-    // Rate limit: 분당 15회 = 단어 하나 처리에 4초 이상 대기
-    if(i < target.length - 1 && !regenAborted){
-      await new Promise(function(r){ setTimeout(r, 4200); });
+    // 청크 사이 대기 (Gemini 2.5 Flash 무료 한도: 분당 10회 기준 안전 마진)
+    if(c < chunks.length - 1 && !regenAborted){
+      await new Promise(function(r){ setTimeout(r, 6500); });
     }
   }
 
