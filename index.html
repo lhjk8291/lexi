@@ -408,6 +408,73 @@ details.raw pre{
   font-family:'IBM Plex Mono',monospace;font-size:12.5px;
   color:#566059;margin:8px 0 16px;min-height:16px;
 }
+
+/* ============ 텍스트형 링크 버튼 ============ */
+.btn-textlike{
+  background:none;border:none;color:#566059;
+  font-size:12px;text-decoration:underline;
+  padding:4px 8px;cursor:pointer;width:100%;text-align:center;
+}
+
+/* ============ 무음 카메라 (실시간 미리보기) ============ */
+.silent-cam-overlay{
+  position:fixed;inset:0;background:#000;z-index:400;
+  display:none;flex-direction:column;
+}
+.silent-cam-overlay.show{display:flex;}
+.scam-top{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;padding-top:max(14px, env(safe-area-inset-top));
+  background:rgba(0,0,0,.4);z-index:2;
+}
+.scam-close{
+  width:40px;height:40px;border-radius:50%;border:none;
+  background:rgba(255,255,255,.15);color:#fff;font-size:22px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+.scam-title{color:#fff;font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:600;}
+.scam-video-wrap{
+  flex:1;position:relative;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;background:#000;
+}
+.scam-video-wrap video{
+  width:100%;height:100%;object-fit:cover;
+}
+.scam-guide{
+  position:absolute;inset:6% 6%;
+  border:2px dashed rgba(255,255,255,.55);border-radius:16px;
+  pointer-events:none;
+}
+.scam-hint{
+  text-align:center;color:rgba(255,255,255,.85);font-size:13px;
+  padding:10px 20px;background:rgba(0,0,0,.4);
+}
+.scam-controls{
+  display:flex;align-items:center;justify-content:center;gap:36px;
+  padding:22px 20px;padding-bottom:max(22px, env(safe-area-inset-bottom));
+  background:rgba(0,0,0,.4);
+}
+.scam-shutter{
+  width:72px;height:72px;border-radius:50%;
+  background:#fff;border:4px solid rgba(255,255,255,.4);
+  cursor:pointer;position:relative;
+}
+.scam-shutter:active{background:#DCEAE6;transform:scale(.95);}
+.scam-switch{
+  width:44px;height:44px;border-radius:50%;border:none;
+  background:rgba(255,255,255,.15);color:#fff;font-size:19px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+.scam-flash{
+  position:fixed;inset:0;background:#fff;z-index:401;
+  opacity:0;pointer-events:none;
+}
+.scam-flash.flashing{
+  animation:scamFlash .25s ease-out;
+}
+@keyframes scamFlash{
+  0%{opacity:.85;} 100%{opacity:0;}
+}
 .mn-row{display:flex;align-items:baseline;gap:6px;padding:2px 0;font-size:13px;line-height:1.5;}
 .mn-num{color:#1F6F64;font-weight:600;font-size:12px;min-width:14px;flex-shrink:0;}
 .mn-pos{
@@ -541,13 +608,16 @@ details.raw pre{
   <!-- CAPTURE -->
   <div class="sec active" id="sec-capture">
     <div class="cam-row">
-      <button class="btn btn-p" onclick="document.getElementById('camIn').click()">📷 사진 촬영</button>
+      <button class="btn btn-p" onclick="openSilentCamera()">🔇 무음 촬영</button>
       <button class="btn btn-g" onclick="document.getElementById('galIn').click()">🖼️ 갤러리</button>
+    </div>
+    <div class="cam-row" style="margin-top:6px;">
+      <button class="btn-textlike" onclick="document.getElementById('camIn').click()">일반 카메라로 찍기 (셔터음 있음)</button>
     </div>
     <input type="file" accept="image/*" capture="environment" id="camIn" style="display:none" onchange="handleImg(this)">
     <input type="file" accept="image/*" id="galIn" style="display:none" onchange="handleImg(this)">
 
-    <div class="tip">📷 <b>잘 찍는 법:</b> 책을 평평하게 펴고, 그림자 없는 균일한 조명에서, 글자 영역이 화면에 꽉 차도록 정면으로 찍어주세요.</div>
+    <div class="tip">🔇 <b>무음 촬영</b>은 폰 자체 카메라를 거치지 않아 셔터음이 나지 않아요. 도서관 등에서 사용하세요.<br>📷 <b>잘 찍는 법:</b> 책을 평평하게 펴고, 그림자 없는 균일한 조명에서, 글자 영역이 화면에 꽉 차도록 정면으로 찍어주세요.</div>
 
     <div class="preview" id="prevBox"><div class="preview-empty">아직 사진이 없어요.<br>위에서 촬영하거나 선택해주세요.</div></div>
 
@@ -617,6 +687,26 @@ details.raw pre{
     <div id="studyRun" style="display:none;"></div>
   </div>
 </div>
+
+<!-- 무음 카메라 모달 -->
+<div class="silent-cam-overlay" id="silentCamOverlay">
+  <div class="scam-top">
+    <button class="scam-close" onclick="closeSilentCamera()">×</button>
+    <div class="scam-title">🔇 무음 촬영</div>
+    <div style="width:40px;"></div>
+  </div>
+  <div class="scam-video-wrap">
+    <video id="scamVideo" autoplay playsinline muted></video>
+    <div class="scam-guide"></div>
+  </div>
+  <div class="scam-hint" id="scamHint">책을 화면 안에 평평하게 맞춰주세요</div>
+  <div class="scam-controls">
+    <button class="scam-switch" onclick="switchCamera()" title="카메라 전환">🔄</button>
+    <button class="scam-shutter" id="scamShutterBtn" onclick="captureSilently()"></button>
+    <div style="width:52px;"></div>
+  </div>
+</div>
+<canvas id="scamCanvas" style="display:none;"></canvas>
 
 <!-- 뱃지 컬렉션 모달 -->
 <div class="modal-bg" id="badgeModal" onclick="closeBadgeCollectionBg(event)">
@@ -978,6 +1068,103 @@ function handleImg(input){
   reader.readAsDataURL(file);
   input.value = '';
 }
+
+// ========== 무음 촬영 (getUserMedia 기반, 시스템 셔터음 없음) ==========
+// 네이티브 카메라 앱(capture 속성)을 거치지 않고, 브라우저가 직접 카메라 스트림을
+// 받아 화면에 미리보기 → 캔버스로 캡처하는 방식이라 시스템 셔터음이 울리지 않음.
+var scamStream = null;
+var scamFacingMode = 'environment'; // 후면 카메라 기본
+
+function openSilentCamera(){
+  var overlay = document.getElementById('silentCamOverlay');
+  overlay.classList.add('show');
+  startCameraStream();
+}
+
+function closeSilentCamera(){
+  stopCameraStream();
+  document.getElementById('silentCamOverlay').classList.remove('show');
+}
+
+function stopCameraStream(){
+  if(scamStream){
+    scamStream.getTracks().forEach(function(t){ t.stop(); });
+    scamStream = null;
+  }
+}
+
+async function startCameraStream(){
+  stopCameraStream();
+  var hint = document.getElementById('scamHint');
+  hint.textContent = '카메라를 준비하고 있어요...';
+  try{
+    var constraints = {
+      video: {
+        facingMode: { ideal: scamFacingMode },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      },
+      audio: false
+    };
+    scamStream = await navigator.mediaDevices.getUserMedia(constraints);
+    var video = document.getElementById('scamVideo');
+    video.srcObject = scamStream;
+    hint.textContent = '책을 화면 안에 평평하게 맞춰주세요';
+  }catch(err){
+    console.error('카메라 스트림 실패:', err);
+    hint.innerHTML = '⚠ 카메라를 열 수 없어요.<br>권한을 확인하거나 아래 "일반 카메라로 찍기"를 이용해주세요.';
+    if(navigator.vibrate) navigator.vibrate([50,50,50]);
+  }
+}
+
+function switchCamera(){
+  scamFacingMode = (scamFacingMode === 'environment') ? 'user' : 'environment';
+  startCameraStream();
+}
+
+function captureSilently(){
+  var video = document.getElementById('scamVideo');
+  if(!video.videoWidth){
+    // 아직 스트림 준비 안 됨
+    return;
+  }
+  var canvas = document.getElementById('scamCanvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  var ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  imgData = canvas.toDataURL('image/jpeg', 0.92);
+
+  // 시각적 피드백 (플래시 애니메이션) - 소리 없이 촬영감만 전달
+  var flash = document.createElement('div');
+  flash.className = 'scam-flash flashing';
+  document.body.appendChild(flash);
+  setTimeout(function(){ flash.remove(); }, 300);
+  if(navigator.vibrate) navigator.vibrate(15); // 짧은 무음 진동 피드백
+
+  // 미리보기 반영 + 모달 닫기
+  document.getElementById('prevBox').innerHTML = '<img src="'+imgData+'">';
+  document.getElementById('btnExtract').disabled = false;
+  document.getElementById('candBox').style.display='none';
+  document.getElementById('rawBox').style.display='none';
+  document.getElementById('prog').textContent='';
+
+  setTimeout(function(){
+    closeSilentCamera();
+  }, 200);
+}
+
+// 모달이 백그라운드로 갈 때 스트림 정리 (배터리/권한 절약)
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden){
+    stopCameraStream();
+  } else {
+    var overlay = document.getElementById('silentCamOverlay');
+    if(overlay && overlay.classList.contains('show') && !scamStream){
+      startCameraStream();
+    }
+  }
+});
 
 // ========== IMAGE PREPROCESSING ==========
 // Tesseract는 자체 이진화가 강력하므로, 우리는 grayscale + 가벼운 샤프닝만.
